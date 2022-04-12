@@ -93,7 +93,7 @@
       <SubSystem>Console</SubSystem>
       <GenerateDebugInformation>true</GenerateDebugInformation>
       <AdditionalManifestDependencies>%(AdditionalManifestDependencies)</AdditionalManifestDependencies>
-      <AdditionalDependencies>TVicPort.lib;nvapi/nvapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
+      <AdditionalDependencies>lib/TVicPort.lib;lib/nvapi/nvapi.lib;%(AdditionalDependencies)</AdditionalDependencies>
       <AdditionalLibraryDirectories>C:\Users\ryu\source\repos\ThinkBridge\ThinkBridge\lib;%(AdditionalLibraryDirectories)</AdditionalLibraryDirectories>
     </Link>
   </ItemDefinitionGroup>
@@ -156,6 +156,7 @@
     <ClInclude Include="lib\nvapi\nvapi_lite_stereo.h" />
     <ClInclude Include="lib\nvapi\nvapi_lite_surround.h" />
     <ClInclude Include="lib\TVicPort.h" />
+    <ClInclude Include="PoC.h" />
     <ClInclude Include="ThinkBridge.h" />
     <ClInclude Include="tools.h" />
     <ClInclude Include="_prec.h" />

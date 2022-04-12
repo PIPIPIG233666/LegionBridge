@@ -1,9 +1,82 @@
 ﻿#include "_prec.h"
-#include "lib/TVicPort.h"
 #include "lib/nvapi/nvapi.h"
 #include "ThinkBridge.h"
 #include <atlconv.h>
+#include "PoC.h"
 
+#define CPUTEMP "0xFE0B0538"
+#define GPUTEMP "0xFE0B0539"
+
+#define FANPWRMODE "0xFE0B0530"
+#define ECPWRMODE "0xFE0B0420"
+
+#define CPUFANSPEED "0xFE0B0600"
+#define GPUFANSPEED "0xFE0B0601"
+
+const char* CPUCurrentFanCurve[]{
+	"0xFE0B0540",
+	"0xFE0B0541",
+	"0xFE0B0542",
+	"0xFE0B0543",
+	"0xFE0B0544",
+	"0xFE0B0545",
+	"0xFE0B0546",
+	"0xFE0B0547",
+	"0xFE0B0548",
+	"0xFE0B0549",
+};
+
+const char* GPUCurrentFanCurve[]{
+	"0xFE0B0550",
+	"0xFE0B0551",
+	"0xFE0B0552",
+	"0xFE0B0553",
+	"0xFE0B0554",
+	"0xFE0B0555",
+	"0xFE0B0556",
+	"0xFE0B0557",
+	"0xFE0B0558",
+	"0xFE0B0559",
+};
+
+RwDrv::RwDrv()
+{
+	h = CreateFileA("\\\\.\\RwDrv", GENERIC_READ | GENERIC_WRITE, 0, 0, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, 0);
+	if (h == INVALID_HANDLE_VALUE)
+	{
+		printf("Driver Not Loaded!\n");
+		exit(0);
+	}
+}
+
+RwDrv::~RwDrv()
+{
+	CloseHandle(h);
+}
+
+void RwDrv::PhysicalRead(uint64_t Address, uint64_t* Address2, DWORD Size)
+{
+	PhysRW_t A;
+
+	A.PhysicalAddress = Address;
+	A.Address = (uint64_t)Address2;
+	A.Unknown = 0;
+	A.Size = Size;
+
+	DeviceIoControl(h, 0x222808, &A, sizeof(A), &A, sizeof(A), 0, 0);
+}
+
+void RwDrv::PhysicalWrite(uint64_t Address, uint64_t* Address2, DWORD Size)
+{
+	PhysRW_t A;
+
+	A.PhysicalAddress = Address;
+	A.Address = (uint64_t)Address2;
+	A.Unknown = 0;
+	A.Size = Size;
+
+	DeviceIoControl(h, 0x22280C, &A, sizeof(A), 0, 0, 0, 0);
+}
 
 //-------------------------------------------------------------------------
 // 
@@ -18,216 +91,12 @@ BSTR convertCharToBSTR(char* input) {
 	return str;
 }
 
-
-//-------------------------------------------------------------------------
-// built-in. read a byte from the embedded controller (EC) via port io
-//-------------------------------------------------------------------------
-int ReadByteFromEC(int offset, char* pdata)
-{
-	char data = -1;
-	char data2 = -1;
-	int iOK = false;
-	int iTimeout = 100;
-	int iTimeoutBuf = 1000;
-	int	iTime = 0;
-	int iTick = 10;
-
-	// wait for full buffers to clear or timeout iTimeoutBuf = 1000
-	for (iTime = 0; iTime < iTimeoutBuf; iTime += iTick) {
-		data = (char)ReadPort(EC_CTRLPORT) & 0xff;
-		if (!(data & (EC_STAT_IBF | EC_STAT_OBF))) break;
-		::Sleep(iTick);
-	}
-
-	// clear OBF(output buff) if full
-	if (data & EC_STAT_OBF) data2 = (char)ReadPort(EC_DATAPORT);
-
-	// tell 'em we want to "READ"
-	WritePort(EC_CTRLPORT, EC_CTRLPORT_READ);
-
-	for (iTime = 0; iTime < iTimeout; iTime += iTick) {
-
-		// wait for IBF and OBF to clear
-		data = (char)ReadPort(EC_CTRLPORT) & 0xff;
-		if (!(data & (EC_STAT_IBF | EC_STAT_OBF))) {
-			iOK = true;
-			break;
-		}
-
-		// try again after a moment
-		::Sleep(iTick);
-	}
-
-	if (!iOK) return 0;
-	iOK = false;
-
-	// tell 'em where we want to read from
-	WritePort(EC_DATAPORT, offset);
-
-	if (!(data & EC_STAT_OBF)) {
-		for (iTime = 0; iTime < iTimeout; iTime += iTick) {
-
-			// wait for OBF to clear
-			data = (char)ReadPort(EC_CTRLPORT) & 0xff;
-			if ((data & EC_STAT_OBF)) {
-				iOK = true;
-				break;
-			}
-
-			// try again after a moment
-			::Sleep(iTick);
-		}
-		if (!iOK) return 0;
-	}
-
-	*pdata = ReadPort(EC_DATAPORT);
-
-	return 1;
-}
-
-
-//-------------------------------------------------------------------------
-// built-in. write a byte to the embedded controller (EC) via port io
-//-------------------------------------------------------------------------
-int WriteByteToEC(int offset, char NewData)
-{
-	char data = -1;
-	char data2 = -1;
-	int iOK = false;
-	int iTimeout = 100;
-	int iTimeoutBuf = 1000;
-	int	iTime = 0;
-	int iTick = 10;
-
-	for (iTime = 0; iTime < iTimeoutBuf; iTime += iTick) {	// wait for full buffers to clear
-		data = (char)ReadPort(EC_CTRLPORT) & 0xff;			// or timeout iTimeoutBuf = 1000
-		if (!(data & (EC_STAT_IBF | EC_STAT_OBF))) break;
-		::Sleep(iTick);
-	}
-
-	if (data & EC_STAT_OBF) data2 = (char)ReadPort(EC_DATAPORT); //clear OBF if full
-
-	for (iTime = 0; iTime < iTimeout; iTime += iTick) { // wait for IOBF to clear
-		data = (char)ReadPort(EC_CTRLPORT) & 0xff;
-		if (!(data & EC_STAT_OBF)) {
-			iOK = true;
-			break;
-		}
-		::Sleep(iTick);
-	}  // try again after a moment
-
-	if (!iOK) return 0;
-	iOK = false;
-
-	WritePort(EC_CTRLPORT, EC_CTRLPORT_WRITE);		// tell 'em we want to "WRITE"
-
-	for (iTime = 0; iTime < iTimeout; iTime += iTick) { // wait for IBF and OBF to clear
-		data = (char)ReadPort(EC_CTRLPORT) & 0xff;
-		if (!(data & (EC_STAT_IBF | EC_STAT_OBF))) {
-			iOK = true;
-			break;
-		}
-		::Sleep(iTick);
-	}							// try again after a moment
-
-	if (!iOK) return 0;
-	iOK = false;
-
-	WritePort(EC_DATAPORT, offset);					// tell 'em where we want to write to
-
-	for (iTime = 0; iTime < iTimeout; iTime += iTick) { // wait for IBF and OBF to clear
-		data = (char)ReadPort(EC_CTRLPORT) & 0xff;
-		if (!(data & (EC_STAT_IBF | EC_STAT_OBF))) {
-			iOK = true;
-			break;
-		}
-		::Sleep(iTick);
-	}							// try again after a moment
-
-	if (!iOK) return 0;
-	iOK = false;
-
-	WritePort(EC_DATAPORT, NewData);				// tell 'em what we want to write there
-
-	return 1;
-}
-
-
-//-------------------------------------------------------------------------
-// built-in.
-//-------------------------------------------------------------------------
-int ReadEcRaw(FCSTATE* pfcstate) {
-
-	int ok;
-
-	// fan 1
-	ok = WriteByteToEC(TP_ECOFFSET_FAN_SWITCH, TP_ECOFFSET_FAN1);
-	if (ok)
-		ok = ReadByteFromEC(TP_ECOFFSET_FANSPEED, &pfcstate->FanSpeedLo1);
-	if (!ok) {
-		printf("failed to read FanSpeedLowByte 1 from EC");
-	}
-
-	if (ok)
-		ok = ReadByteFromEC(TP_ECOFFSET_FANSPEED + 1, &pfcstate->FanSpeedHi1);
-	if (!ok) {
-		printf("failed to read FanSpeedHighByte 1 from EC");
-	}
-	ok = ReadByteFromEC(TP_ECOFFSET_FAN, &pfcstate->Fan1StateLevel);
-
-	// fan 2
-	ok = WriteByteToEC(TP_ECOFFSET_FAN_SWITCH, TP_ECOFFSET_FAN2);
-	if (ok)
-		ok = ReadByteFromEC(TP_ECOFFSET_FANSPEED, &pfcstate->FanSpeedLo2);
-	if (!ok) {
-		printf("failed to read FanSpeedLowByte 2 from EC");
-	}
-
-	if (ok)
-		ok = ReadByteFromEC(TP_ECOFFSET_FANSPEED + 1, &pfcstate->FanSpeedHi2);
-	if (!ok) {
-		printf("failed to read FanSpeedHighByte 2 from EC");
-	}
-	ok = ReadByteFromEC(TP_ECOFFSET_FAN, &pfcstate->Fan2StateLevel);
-
-	return 0;
-
-}
-
-
-//-------------------------------------------------------------------------
-// built-in.
-//-------------------------------------------------------------------------
-int ReadEcStatus(FCSTATE* pfcstate) {
-
-	char ok = 0;
-
-	for (int i = 0; i < 3; i++) {
-		ok = ReadEcRaw(pfcstate);
-		if (ok)
-			break;
-		::Sleep(200);
-	}
-
-	return ok;
-}
-
-
 //-------------------------------------------------------------------------
 //
 //-------------------------------------------------------------------------
 int StartDevice()
 {
-	bool ok = false;
 	NvAPI_Status nvapi_ok = NVAPI_ERROR;
-
-	for (int i = 0; i < 180; i++)
-	{
-		ok = OpenTVicPort();
-		if (ok) break;
-
-		::Sleep(1000);
-	}
 
 	for (int i = 0; i < 180; i++)
 	{
@@ -237,23 +106,8 @@ int StartDevice()
 		::Sleep(1000);
 	}
 
-	SetHardAccess(true);
-
 	return 0;
 }
-
-
-//-------------------------------------------------------------------------
-//
-//-------------------------------------------------------------------------
-int CloseDevice()
-{
-	SetHardAccess(false);
-	CloseTVicPort();
-	
-	return 0;
-}
-
 
 //-------------------------------------------------------------------------
 //
@@ -315,18 +169,41 @@ BSTR ReadGpuName()
 
 }
 
+int PhysicalRead(const char *node) {
+	RwDrv* Drv = new RwDrv();
+	int ret = 0;
+	for (int i = 2; i < 3; i++)
+	{
+		uint64_t Address;
+		sscanf_s(node, "%llx", &Address);
+		uint8_t result;
+		Drv->PhysicalRead(Address, (uint64_t*)&result, 1);
+		ret = static_cast<unsigned>(result);
+	}
+	return ret;
+}
 
-//-------------------------------------------------------------------------
-//
-//-------------------------------------------------------------------------
+int PhysicalWrite(const char* node, const char *data) {
+	RwDrv* Drv = new RwDrv();
+	int ret = 0;
+	for (int i = 2; i < 4; i += 2)
+	{
+		uint64_t Address;
+		uint32_t Data;
+		sscanf_s(node, "%llx", &Address);
+		sscanf_s(data, "%x", &Data);
+		Drv->PhysicalWrite(Address, (uint64_t*)&Data, 1);
+	}
+	return ret;
+}
+
 int SetFan1State(int fanstate)
 {
-	int ok = 0;
+	int ret = 0;
 
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < 10; i++) {
 
-		ok = WriteByteToEC(TP_ECOFFSET_FAN_SWITCH, TP_ECOFFSET_FAN1);
-		ok = WriteByteToEC(TP_ECOFFSET_FAN, fanstate);
+		PhysicalWrite(CPUCurrentFanCurve[i], "0A");
 
 		::Sleep(100);
 	}
@@ -340,12 +217,11 @@ int SetFan1State(int fanstate)
 //-------------------------------------------------------------------------
 int SetFan2State(int fanstate)
 {
-	int ok = 0;
+	int ret = 0;
 
-	for (int i = 0; i < 5; i++) {
+	for (int i = 0; i < 10; i++) {
 
-		ok = WriteByteToEC(TP_ECOFFSET_FAN_SWITCH, TP_ECOFFSET_FAN2);
-		ok = WriteByteToEC(TP_ECOFFSET_FAN, fanstate);
+		PhysicalWrite(GPUCurrentFanCurve[i], "0A");
 
 		::Sleep(100);
 	}
@@ -353,60 +229,35 @@ int SetFan2State(int fanstate)
 	return 0;
 }
 
+//-------------------------------------------------------------------------
+//  
+//-------------------------------------------------------------------------
 
-//-------------------------------------------------------------------------
-//
-//-------------------------------------------------------------------------
 int ReadCpuTemperture(int* cpuTemperture)
 {
-	char value;
-	ReadByteFromEC(TP_ECOFFSET_TEMP0, &value);
-
-	*cpuTemperture = (int)value;
-
+	*cpuTemperture = PhysicalRead(CPUTEMP);
 	return 0;
 }
 
-
-//-------------------------------------------------------------------------
-//  
-//-------------------------------------------------------------------------
 int ReadGpuTemperture(int* gpuTemperture)
 {
-	NvAPI_Status nvapi_ok = NVAPI_ERROR;
-
-	NvU32 count;
-	NvPhysicalGpuHandle handle;
-	NV_GPU_THERMAL_SETTINGS thermal;
-
-	nvapi_ok = NvAPI_EnumPhysicalGPUs(&handle, &count);
-
-	thermal.version = NV_GPU_THERMAL_SETTINGS_VER;
-	nvapi_ok = NvAPI_GPU_GetThermalSettings(handle, 0, &thermal);
-
-	if (nvapi_ok != NVAPI_OK) return 1;
- 
-	*gpuTemperture = static_cast<unsigned>(thermal.sensor[0].currentTemp);
-
+	*gpuTemperture = PhysicalRead(GPUTEMP);
 	return 0;
 }
 
+int ReadPerfMode() {
+	int ret = 0;
 
-//-------------------------------------------------------------------------
-//  
-//-------------------------------------------------------------------------
+	return ret;
+}
+
 int ReadFanState(FCSTATE* state)
 {
-	int ok = 1;
-	ok = ReadEcStatus(state);
-
-	// combine lo/hi byte
-	state->Fan1Speed = (short)(((state->FanSpeedHi1) & 0xFF) << 8 | (state->FanSpeedLo1) & 0xFF);
-	state->Fan2Speed = (short)(((state->FanSpeedHi2) & 0xFF) << 8 | (state->FanSpeedLo2) & 0xFF);
+	state->Fan1Speed = 44 * (int)PhysicalRead(CPUFANSPEED);
+	state->Fan2Speed = 44 * (int)PhysicalRead(GPUFANSPEED);
 
 	return 0;
 }
-
 
 int main(void)
 {
@@ -422,14 +273,12 @@ int ReadCpuTemperture()
 	return cpuTemperture;
 }
 
-
 int ReadGpuTemperture()
 {
 	int gpuTemperture;
 	ReadGpuTemperture(&gpuTemperture);
 	return gpuTemperture;
 }
-
 
 int ReadFan1Speed() {
 	FCSTATE state;
@@ -443,5 +292,4 @@ int ReadFan2Speed() {
 	ReadFanState(&state);
 	return state.Fan2Speed;
 }
-
 
